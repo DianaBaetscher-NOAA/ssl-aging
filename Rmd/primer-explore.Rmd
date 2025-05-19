@@ -1,0 +1,35 @@
+---
+title: "primer-exploration"
+author: "diana baetscher"
+date: "2024-11-14"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Trying to figure out how the primers match up with published mammalian CpG sites.
+
+```{r load-libraries-and-data}
+library(tidyverse)
+library(readxl)
+
+# primers from Simon
+primers <- read_xlsx("../data/SSL_aging_primers_multiplex1.xlsx", sheet = "primers")
+
+# data from Robeck et al.
+robeck <- read_xlsx("../data/42003_2023_4734_MOESM4_ESM.xlsx")
+
+# the linking field should be the Microarray_site with the CGid 
+primers %>%
+  left_join(., robeck, by = c("Microarray_site" = "CGid"))  %>%
+  arrange(Microarray_site) %>%
+  select(-c('...1', "z", "pval", "EWAS")) %>%
+  unique()
+```
+
+Where is the rest of the sequence data used for primer design? Referenced through the seqnames NCBI query number.
+
+

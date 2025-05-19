@@ -1,0 +1,137 @@
+---
+title: "singleplex_loci"
+author: "diana baetscher"
+date: "2025-05-19"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Quick look at methylation patterns in targeted loci for Steller Sea Lions
+
+
+Bismarck output from Charles for 11/12 loci
+
+```{r load-libraries-and-data}
+library(tidyverse)
+
+metadata <- read_csv("../data/Ejubatus_ABLG_export_20250506.csv") %>%
+  mutate(ABLG = as.character(ABLG))
+
+data <- read_csv("../data/locus002_bismark_summary_report.csv")
+
+sample_df <- data %>%
+  mutate(File = str_replace(File, "/home/cgumbi/methylation/sea_lion/bismark_output/locus002/alignment/", "")) %>%
+  mutate(File = str_replace(File, "_S*_*_L001_R1_trimmed_bismark_bt2_pe.bam", "")) %>%
+  separate(File, into = c("sample", "locus")) %>%
+  filter(!locus %in% c("S0", "SSL"))
+  
+```
+
+```{r}
+sample_df %>%
+  ggplot(aes(x = sample, y = `Aligned Reads`/`Total Reads`)) +
+  geom_point() +
+  facet_wrap(.~locus) +
+  theme(
+    axis.text.x = element_blank()
+  ) +
+  labs(title = "SSL: on-target reads by locus")
+  
+```
+
+
+```{r}
+sample_df %>%
+  ggplot(aes(x = sample, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`))) +
+  geom_point() +
+  facet_wrap(.~locus, scales = "free") +
+  theme(
+    axis.text.x = element_blank()
+  ) +
+  labs(title = "SSL: methylated CpGs / methylated CpG + unmethylated CpG")
+
+
+```
+
+It doesn't look like a ton of variation in methylation level across samples within a locus. Let's look at HSPA2 closer as an example.
+
+```{r}
+sample_df %>%
+  filter(locus == "HSPA2") %>%
+  ggplot(aes(x = sample, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`))) +
+  geom_point() +
+  facet_wrap(.~locus) +
+  theme(
+    axis.text.x = element_text(angle = 90)
+  ) +
+  labs(title = "SSL, locus HSPA2: methylated CpGs / methylated CpG + unmethylated CpG")
+
+
+```
+
+Actually, that's a decent spread: <25% methylated CpGs to >50% CpGs.
+
+Is it correlated with age though?
+
+```{r add-metadata}
+sample_df %>%
+  filter(locus == "HSPA2") %>%
+  left_join(., metadata, by = c("sample" = "ABLG")) %>%
+  ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`))) +
+  geom_point() +
+  facet_wrap(.~locus) +
+  theme(
+    axis.text.x = element_text(angle = 90)
+  ) +
+  labs(title = "SSL, locus HSPA2: methylated CpGs / methylated CpG + unmethylated CpG")
+
+```
+Cool! Looks like there's information in that locus.
+
+Let's look at the rest?
+
+```{r plot-all-loci}
+sample_df %>%
+  left_join(., metadata, by = c("sample" = "ABLG")) %>%
+  ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`))) +
+  geom_point() +
+  facet_wrap(.~locus, scales = "free") +
+  theme(
+    axis.text.x = element_text(angle = 90)
+  ) +
+  labs(title = "SSL: methylated CpGs / methylated CpG + unmethylated CpG")
+
+ggsave("outputs/Methylated_CpGs_by_locus.png", width = 10, height = 8)
+```
+
+```{r}
+sample_df %>%
+  filter(locus == "LOC1139" & `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`) > 0.2) %>%
+  left_join(., metadata, by = c("sample" = "ABLG")) %>%
+  ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`), color = sample)) +
+  geom_point() +
+  facet_wrap(.~locus, scales = "free") +
+  theme(
+    axis.text.x = element_text(angle = 90)
+  ) +
+  labs(title = "SSL: methylated CpGs / methylated CpG + unmethylated CpG")
+
+```
+
+```{r}
+sample_df %>%
+  mutate(outlier = ifelse(sample == "37207", "37207", "no")) %>%
+  left_join(., metadata, by = c("sample" = "ABLG")) %>%
+  ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`), color = outlier)) +
+  geom_point() +
+  facet_wrap(.~locus, scales = "free") +
+  theme(
+    axis.text.x = element_text(angle = 90)
+  ) +
+  labs(title = "SSL: methylated CpGs / methylated CpG + unmethylated CpG")
+  
+```
+
