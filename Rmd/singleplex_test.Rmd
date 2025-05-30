@@ -12,8 +12,7 @@ knitr::opts_chunk$set(echo = TRUE)
 # Quick look at methylation patterns in targeted loci for Steller Sea Lions
 
 
-Bismarck output from Charles for 11/12 loci
-The data for the initial test locus can be added later...
+Bismarck output from Charles for 12 loci amplified and barcoded individually and then sequenced with the MiSeq V3 paired-end, 2x75 bp sequencing.
 
 
 ```{r load-libraries-and-data}

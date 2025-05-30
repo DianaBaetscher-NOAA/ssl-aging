@@ -5,7 +5,9 @@ diana baetscher
 
 # Quick look at methylation patterns in targeted loci for Steller Sea Lions
 
-Bismarck output from Charles for 11/12 loci
+Bismarck output from Charles for 12 loci amplified and barcoded
+individually and then sequenced with the MiSeq V3 paired-end, 2x75 bp
+sequencing.
 
 ``` r
 library(tidyverse)
@@ -63,7 +65,47 @@ sample_df <- data %>%
     ## 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, ...].
 
 ``` r
-sample_df %>%
+loc114 <- read_csv("../data/Loci114_bismark_summary.csv") 
+```
+
+    ## Rows: 95 Columns: 15
+    ## ── Column specification ────────────────────────────────────────────────────────
+    ## Delimiter: ","
+    ## chr  (1): File
+    ## dbl (12): Total Reads, Aligned Reads, Unaligned Reads, Ambiguously Aligned R...
+    ## lgl  (2): Duplicate Reads (removed), Unique Reads (remaining)
+    ## 
+    ## ℹ Use `spec()` to retrieve the full column specification for this data.
+    ## ℹ Specify the column types or set `show_col_types = FALSE` to quiet this message.
+
+``` r
+loc114_df <- loc114 %>%
+  mutate(File = str_replace(File, "./", "")) %>%
+  separate(File, into = c("sample", "toss"), sep = "_S") %>%
+  select(-toss) %>%
+  mutate(locus = "LOC114") %>%
+  select(sample, locus, everything())
+
+# and then combine with the sample df
+ssl_bismark_output <- loc114_df %>%
+  bind_rows(sample_df)
+```
+
+``` r
+ssl_bismark_output %>%
+  ggplot(aes(x = sample, y = `Total Reads`)) +
+  geom_point() +
+  facet_wrap(.~locus) +
+  theme(
+    axis.text.x = element_blank()
+  ) 
+```
+
+![](singleplex_test_files/figure-gfm/sequencing-depth-across-loci-1.png)<!-- -->
+Plenty of sequencing, even though it varies by locus.
+
+``` r
+ssl_bismark_output %>%
   ggplot(aes(x = sample, y = `Aligned Reads`/`Total Reads`)) +
   geom_point() +
   facet_wrap(.~locus) +
@@ -73,44 +115,28 @@ sample_df %>%
   labs(title = "SSL: on-target reads by locus")
 ```
 
-![](singleplex_test_files/figure-gfm/unnamed-chunk-1-1.png)<!-- -->
+![](singleplex_test_files/figure-gfm/on-target-reads-1.png)<!-- -->
 
 ``` r
-sample_df %>%
+ssl_bismark_output %>%
   ggplot(aes(x = sample, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`))) +
   geom_point() +
   facet_wrap(.~locus, scales = "free") +
   theme(
     axis.text.x = element_blank()
   ) +
-  labs(title = "SSL: methylated CpGs / methylated CpG + unmethylated CpG")
+  labs(title = "SSL: Methylation at CpG sites")
 ```
 
-![](singleplex_test_files/figure-gfm/unnamed-chunk-2-1.png)<!-- -->
+    ## Warning: Removed 69 rows containing missing values or values outside the scale range
+    ## (`geom_point()`).
 
-It doesn’t look like a ton of variation in methylation level across
-samples within a locus. Let’s look at HSPA2 closer as an example.
+![](singleplex_test_files/figure-gfm/looking-at-CpG-sites-1.png)<!-- -->
 
-``` r
-sample_df %>%
-  filter(locus == "HSPA2") %>%
-  ggplot(aes(x = sample, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`))) +
-  geom_point() +
-  facet_wrap(.~locus) +
-  theme(
-    axis.text.x = element_text(angle = 90)
-  ) +
-  labs(title = "SSL, locus HSPA2: methylated CpGs / methylated CpG + unmethylated CpG")
-```
-
-![](singleplex_test_files/figure-gfm/unnamed-chunk-3-1.png)<!-- -->
-Actually, that’s a decent spread: \<25% methylated CpGs to \>50% CpGs.
-
-Is it correlated with age though?
+Is methylation level correlated with age? Add some metadata to explore…
 
 ``` r
-sample_df %>%
-  filter(locus == "HSPA2") %>%
+ssl_bismark_output %>%
   left_join(., metadata, by = c("sample" = "ABLG")) %>%
   ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`))) +
   geom_point() +
@@ -118,25 +144,32 @@ sample_df %>%
   theme(
     axis.text.x = element_text(angle = 90)
   ) +
-  labs(title = "SSL, locus HSPA2: methylated CpGs / methylated CpG + unmethylated CpG")
+  labs(title = "SSL: methylation at CpG sites")
 ```
 
-![](singleplex_test_files/figure-gfm/add-metadata-1.png)<!-- --> Cool!
-Looks like there’s information in that locus.
+    ## Warning: Removed 69 rows containing missing values or values outside the scale range
+    ## (`geom_point()`).
 
-Let’s look at the rest?
+![](singleplex_test_files/figure-gfm/add-metadata-1.png)<!-- --> Very
+different background methylation levels at each locus, which sort of
+obscures patterns within each locus.
 
 ``` r
-sample_df %>%
+ssl_bismark_output %>%
   left_join(., metadata, by = c("sample" = "ABLG")) %>%
   ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`))) +
   geom_point() +
   facet_wrap(.~locus, scales = "free") +
   theme(
-    axis.text.x = element_text(angle = 90)
+    axis.text.x = element_text(angle = 90, vjust = 0.5),
+    axis.title.x = element_text(margin = margin(t = 10))
   ) +
-  labs(title = "SSL: methylated CpGs / methylated CpG + unmethylated CpG")
+  labs(title = "SSL: methylation at CpGs sites",
+        y = "Methylated CpGs / CpG sites")
 ```
+
+    ## Warning: Removed 69 rows containing missing values or values outside the scale range
+    ## (`geom_point()`).
 
 ![](singleplex_test_files/figure-gfm/plot-all-loci-1.png)<!-- -->
 
@@ -144,8 +177,13 @@ sample_df %>%
 ggsave("outputs/Methylated_CpGs_by_locus.png", width = 10, height = 8)
 ```
 
+    ## Warning: Removed 69 rows containing missing values or values outside the scale range
+    ## (`geom_point()`).
+
+Are the outliers consistent across loci?
+
 ``` r
-sample_df %>%
+ssl_bismark_output %>%
   filter(locus == "LOC1139" & `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`) > 0.2) %>%
   left_join(., metadata, by = c("sample" = "ABLG")) %>%
   ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`), color = sample)) +
@@ -157,10 +195,10 @@ sample_df %>%
   labs(title = "SSL: methylated CpGs / methylated CpG + unmethylated CpG")
 ```
 
-![](singleplex_test_files/figure-gfm/unnamed-chunk-4-1.png)<!-- -->
+![](singleplex_test_files/figure-gfm/check-outliers-1.png)<!-- -->
 
 ``` r
-sample_df %>%
+ssl_bismark_output %>%
   mutate(outlier = ifelse(sample == "37207", "37207", "no")) %>%
   left_join(., metadata, by = c("sample" = "ABLG")) %>%
   ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`), color = outlier)) +
@@ -169,7 +207,36 @@ sample_df %>%
   theme(
     axis.text.x = element_text(angle = 90)
   ) +
-  labs(title = "SSL: methylated CpGs / methylated CpG + unmethylated CpG")
+  labs(title = "SSL: methylation at CpG sites",
+       y = "Methylated CpGs / CpG sites")
 ```
 
-![](singleplex_test_files/figure-gfm/unnamed-chunk-5-1.png)<!-- -->
+    ## Warning: Removed 69 rows containing missing values or values outside the scale range
+    ## (`geom_point()`).
+
+![](singleplex_test_files/figure-gfm/check-outliers-across-loci-1.png)<!-- -->
+
+``` r
+ssl_bismark_output %>%
+  filter(locus == "LOC114") %>%
+  left_join(., metadata, by = c("sample" = "ABLG")) %>%
+  ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`))) +
+  geom_point() +
+  facet_wrap(.~locus, scales = "free") +
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+```
+
+    ## Warning: Removed 69 rows containing missing values or values outside the scale range
+    ## (`geom_point()`).
+
+![](singleplex_test_files/figure-gfm/double-check-if-loc114-has-no-methylated-CpGs-1.png)<!-- -->
+
+Output combined bismark output df for Simon, but return to the analysis
+later.
+
+``` r
+ssl_bismark_output %>%
+  write_csv("outputs/SSL_singleplex_bismark_output.csv")
+```
