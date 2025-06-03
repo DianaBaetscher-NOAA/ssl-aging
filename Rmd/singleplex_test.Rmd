@@ -172,3 +172,52 @@ ssl_bismark_output %>%
 
 ```
 
+
+Thinking about class biases in the ascertainment samples:
+
+Do we have sex information for these individuals?
+
+```{r}
+ssl_bismark_output %>%
+  left_join(., metadata, by = c("sample" = "ABLG")) %>%
+  ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`), color = Sex)) +
+  geom_point() +
+  facet_wrap(.~locus, scales = "free") +
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+```
+
+```{r summary-stats}
+# avg reads by locus/indiv
+ssl_bismark_output %>%
+  summarise(mean_reads = mean(`Total Reads`), .by = locus) %>%
+  arrange(desc(mean_reads))
+
+```
+
+```{r linear-models}
+linear_models <- ssl_bismark_output %>%
+  mutate(CpG_methylation = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`)) %>%
+  left_join(., metadata, by = c("sample" = "ABLG")) %>%
+  group_by(locus) %>%
+    do(broom::tidy(lm(AgeYRS~CpG_methylation, .))) %>%
+  mutate(significant = ifelse(p.value < 0.05, "yes", "no"))
+  
+
+ssl_bismark_output %>%
+  left_join(., metadata, by = c("sample" = "ABLG")) %>%
+  left_join(., linear_models, by = "locus") %>%
+  ggplot(aes(x = AgeYRS, y = `Methylated CpGs`/(`Methylated CpGs` + `Unmethylated CpGs`), color = significant)) +
+  geom_point() +
+  facet_wrap(.~locus, scales = "free") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90)
+  ) +
+  labs(y = "Methylated CpGs / CpG sites",
+       color = "linear model\np-value < 0.05")
+
+```
+
+
