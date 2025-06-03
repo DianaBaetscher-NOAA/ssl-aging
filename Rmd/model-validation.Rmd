@@ -1,0 +1,487 @@
+---
+title: "model-validation"
+author: "diana baetscher"
+date: "2025-06-03"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Based off of Charles's original analysis, which was using code from Nick Weber.
+Here I've modified things a bit - updating the final model runs using the optimal alpha parameter value based on the analysis of alpha.
+I'm also curious about the use of Pearson's correlations in addition to the glmnet weight coefficients for filtering informative loci.
+I toyed with those a bit and basically assumed that we should keep all 12 loci (actually 11 because LOC114 had no usable CpG methylation) unless they are undermining the relationship between CpG methylation and age. I think this is slightly different than filtering that one might do with RADseq or WGS data for identifying a smaller number of age-informative CpG sites.
+
+
+
+
+```{r load-libraries}
+
+library(stringr)
+library(paletteer)
+library(ggplot2)
+library(RcppParallel)
+library(tidyr)
+library(multidplyr)
+library(emmeans)
+library(coda)
+library(igraph)
+library(psych)
+library(glmnetUtils)
+library(glmnet)
+library(Matrix)
+library(Metrics)
+```
+
+
+```{r}
+library(rstan)
+library(rstanarm)
+library(tidyverse)
+```
+
+```{r load-methylation-data}
+dataM <- read_csv("outputs/SSL_singleplex_bismark_output.csv") # output from Bismark
+
+# reformat into wide format, just the CpG methylation sites
+dataM_wide <- dataM %>%
+  mutate(beta = `Methylated CpGs`/(`Methylated CpGs`+`Unmethylated CpGs`)) %>%
+  select(sample, locus, beta) %>%
+  pivot_wider(names_from = locus, values_from = beta) %>%
+  select(-LOC114) # these values are zeros and NAs
+
+# read in and add metadata
+meta <- read_csv("../data/Ejubatus_ABLG_export_20250506.csv")
+
+# add ages to the methylation data
+m_df <- dataM_wide %>%
+  left_join(., meta, by = c("sample" = "ABLG")) %>%
+  select(sample, AgeYRS, c(1:12))
+
+# trimming first column on the dataframe
+ids <- m_df$sample
+methyl_values <- m_df[,-1]
+
+```
+
+
+```{r subset-training-and-test-data}
+# 70/30 split
+
+# Determine the number of rows and split indices
+set.seed(42)
+n_rows <- nrow(methyl_values)
+train_indices <- sample(n_rows, size = (n_rows*0.7), replace = F)
+
+# split the data
+train_data <- methyl_values[train_indices, ]
+test_data <- methyl_values[-train_indices, ]
+
+# trimming first column on the testing and training dataset
+# this removes the age information
+# train_data <- train_data[,-1]
+# test_data <- test_data[,-1]
+
+```
+
+### Modeling
+
+Using the glmnet package, typical to do cross-validation on the training set to determine the optimal penalty parameter (lambda)
+10-fold
+
+
+
+First, work with the training dataset
+
+Documentation here: https://glmnet.stanford.edu/reference/glmnet.html
+
+```{r running-the-epigenetic-clock-model}
+# this uses a cross-validated GLM
+CVGLM <- glmnet::cv.glmnet(x = as.matrix(train_data[,-1]), # input matrix, minus response variable
+                   y = as.matrix(train_data[,1]), # age information (response)
+                   alpha = 0, # elastic net mixing parameter: can be empirically determined between 0-1
+                   nfolds = nrow(methyl_values), # with this parameter, we're using leave-one-out cross-validation
+                   type.measure = "mae",
+                   family = "gaussian",
+                   grouped = FALSE)
+
+min(CVGLM$cvm)
+
+CVGLM
+```
+
+
+```{r Loop-over-indivs-for-age-prediction}
+z <- lapply(1:nrow(train_data), function(x){
+  
+  fit <- glmnet::glmnet(
+                x = as.matrix(train_data[-x,-1]),
+                y = as.matrix(train_data[-x,1]),
+                alpha = 0.05,
+                lambda = CVGLM$lambda.min, # lambda is derived from the training data model
+                family="gaussian")
+
+   pred <- predict(fit, as.matrix(train_data[x,-1]), type = "response")
+
+  return(data.frame(pred, true = train_data[x,1]))
+})
+
+z <- do.call(rbind, z)
+
+colnames(z) <- c("PredictedAge", "ChronologicalAge")
+z 
+
+```
+
+
+```{r linear-regression-on-test-data}
+regression_FCs <- lm(z$ChronologicalAge ~ z$PredictedAge)
+summary(regression_FCs)
+
+```
+
+```{r}
+#MAE (median absolute error) on testing dataset
+mae(z$ChronologicalAge, z$PredictedAge)
+```
+
+```{r}
+#Calculate residuals on testing dataset
+z$Residuals <- z$PredictedAge - z$ChronologicalAge
+
+#Calculate relative error on testing dataset
+z$RelativeError <- abs(z$Residuals) / z$ChronologicalAge
+regression_error <- lm(z$RelativeError ~ z$ChronologicalAge)
+summary(regression_error)
+```
+
+```{r predictions}
+# Predict
+pred <- predict(CVGLM, newx = as.matrix(test_data[,-1]), s="lambda.min")
+
+pred <- data.frame(pred)
+colnames(pred) <- c("PredictedAge")
+pred$ChronologicalAge <- test_data$AgeYRS
+
+#Linear regression on test dataset
+regression <- lm(pred$ChronologicalAge ~ pred$PredictedAge)
+summary(regression)
+
+regression$model
+```
+
+```{r mae-test-data}
+#MAE of test dataset
+test_mae <- round(mae(pred$ChronologicalAge, pred$PredictedAge), digits = 2)
+```
+
+
+```{r test-data-residuals}
+#Calculate residuals on test dataset
+pred$Residuals <- pred$PredictedAge - pred$ChronologicalAge
+
+#Calculate relative error on test dataset
+pred$RelativeError <- abs(pred$Residuals) / pred$ChronologicalAge
+
+regression_error <- lm(pred$RelativeError ~ pred$ChronologicalAge)
+summary(regression_error)
+```
+
+```{r diff-residuals-training-and-test}
+# Test for difference in residuals between training and testing datasets
+var.test(z$Residuals, pred$Residuals)
+```
+
+```{r}
+ggplot(pred, aes(x = ChronologicalAge, y = PredictedAge)) +
+  geom_point(color = "red") +  # Color points red
+  geom_smooth(method = "lm", se = TRUE, color = "blue", fill = "lightblue") +  # Confidence envelope with line
+  labs(x = "Chronological age", y = "Predicted age") +
+  coord_fixed() +  # Ensures same scale for x and y
+  annotate("text", x = 10, y = 22.5, label = "R-squared = 0.6678", # from the regression model
+           color = "black", size = 3) + 
+  annotate("text", x = 10, y = 21.5, label = paste0("Median absolute error = ", test_mae), 
+           color = "black", size = 3) +
+  theme_minimal()
+
+
+```
+
+
+Filter CpG sites using Pearson's correlations - Isn't this also what the elastic net is supposed to do?
+
+```{r}
+### Perfoming a pearson’s correlations between know ages and methylation levels
+#Calculate Pearson's correlations
+corr_matrix <- corr.test(x = as.matrix(methyl_values[,-1]), 
+                         y = methyl_values[, 1], 
+                         use="pairwise", 
+                         method="pearson", 
+                         adjust="BH", 
+                         alpha=0.05)
+
+
+```
+
+```{r convert-matrix-to-dataframe}
+#Format dataframe
+corr_results <- data.frame(corr_matrix$r, corr_matrix$p.adj)
+corr_results <- tibble::rownames_to_column(corr_results, "Loc")
+colnames(corr_results) <- c("Loc", "r", "padj")
+corr_results$absr <- abs(corr_results$r)
+
+# loci with the top 10% of Pearson's correlations
+quantile(corr_results$absr, 0.90)
+# does this filtering scheme make it relative to other loci? 
+# when we would be fine keep as many loci as are providing information for the model...
+```
+
+Rather than filtering for the top 10% of Pearson's correlations, I'll remove the loci with very low Pearson's correlations (< 0.1).
+
+```{r remove-loci-with-low-correlations}
+loc_highr <- corr_results %>%
+  filter(absr > 0.1)
+loc_percent_filt <- methyl_values %>%
+  select(loc_highr$Loc, AgeYRS)
+
+```
+Rerun cv.glmnet with filtered data.
+Does it make a difference?
+
+```{r filtered-loci-based-on-Pearson-correlations}
+CVGLM <- cv.glmnet(x = as.matrix(loc_percent_filt[,-length(loc_percent_filt)]),
+                   y = as.matrix(loc_percent_filt[,length(loc_percent_filt)]),
+                   nfolds = nrow(loc_percent_filt),
+                   alpha = 0, # revisit the appropriate alpha value
+                   type.measure = "mae",
+                   family = "gaussian",
+                   grouped=FALSE)
+
+min(CVGLM$cvm)
+```
+That is a smaller MAE than when using all loci.
+
+
+Filtering loci using glmnet weight coefficients
+
+```{r}
+# Get CpG site model coefficients
+coefList <- coef(CVGLM, s=CVGLM$lambda.min)
+coefList <- data.frame(coefList@Dimnames[[1]][coefList@i+1],coefList@x)
+names(coefList) <- c('loc','val')
+coefList <- coefList[-1, ]
+colnames(coefList) <- c("Loc", "Weight")
+coefList$AbsWeight <- abs(coefList$Weight)
+
+```
+```{r remove-loci-based-on-glmnet-weights}
+# Remove CpG sites in bottom 10% of contributions
+quantile(coefList$AbsWeight, 0.10)
+
+```
+
+**WHY USE TWO METHODS: first Pearson's correlationa and then the glmnet. Presumably, one could just use the GLMnet filter?
+
+```{r glmnet-filter}
+loc_highweights <- coefList %>%
+  filter(AbsWeight > 17)
+
+sealion_perc_filt <- methyl_values %>%
+  select(loc_highweights$Loc, AgeYRS)
+
+```
+
+
+```{r re-run-cvglmnet-with-filtered-loci}
+CVGLM <- cv.glmnet(x = as.matrix(sealion_perc_filt[,-(length(sealion_perc_filt))]),
+                   y = as.matrix(sealion_perc_filt[,length(sealion_perc_filt)]),
+                   nfolds = nrow(sealion_perc_filt),
+                   alpha = 0, # revisit this parameter for appropriate tuning
+                   type.measure = "mae",
+                   family = "gaussian",
+                   grouped=FALSE)
+
+min(CVGLM$cvm)
+```
+That MAE is smaller than the prior filter - but it's strange that the absolute weight is providing much info for PBX3
+
+
+### alpha parameter
+
+Identify the optimal alpha value
+```{r choosing-alpha-parameter}
+x <- as.matrix(sealion_perc_filt[,-length(sealion_perc_filt)])
+y <- as.matrix(sealion_perc_filt[,length(sealion_perc_filt)])
+
+sealion_glmnet <- list()
+nreps <- 10
+sealion_glmnet <- lapply(1:nreps, function(i){
+fit <- cva.glmnet(x = x, 
+                  y = y, 
+                  nfolds=nrow(sealion_perc_filt), 
+                  type.measure="mae", 
+                  family="gaussian", 
+                  grouped=FALSE)
+    sealion_glmnet$model <- fit$modlist
+})
+
+# Rename lists
+prefix <- "model"
+suffix <- seq(1:10)
+prefix2 <- "alpha"
+suffix2 <- c(0.000, 0.001, 0.008, 0.027, 0.064, 0.125, 0.216, 0.343, 0.512, 0.729, 1.000)
+
+for (i in 1:length(sealion_glmnet)) {
+  names(sealion_glmnet) <- paste(prefix, suffix, sep="_")
+    for (j in 1:11) {
+  names(sealion_glmnet[[i]]) <- paste(prefix2, suffix2, sep="_") 
+    }
+}
+
+# Pull parameters of interest
+vec <- data.frame(matrix(ncol=2))
+names(vec) <- c("min.lambda", "min.mae")
+
+for (i in 1:length(sealion_glmnet)) {
+  for (j in 1:length(sealion_glmnet[[i]])) {
+    vec <- rbind(vec, c(sealion_glmnet[[i]][[j]]$lambda.min, min(sealion_glmnet[[i]][[j]]$cvm)))
+    }
+  }
+vec <- vec[-1, ]
+alpha <- c(0.000, 0.001, 0.008, 0.027, 0.064, 0.125, 0.216, 0.343, 0.512, 0.729, 1.000)
+vec$alpha <- rep(alpha, 10)
+
+```
+
+```{r calculating-means-for-each-alpha}
+#Calculate means for each alpha value
+min.mae.means <- aggregate(vec$min.mae ~ as.factor(vec$alpha), FUN=mean)
+min.lambda.means <- aggregate(vec$min.lambda ~ as.factor(vec$alpha), FUN=mean)
+vec.means <- cbind(min.mae.means, min.lambda.means)
+vec.means <- vec.means[ ,-3]
+colnames(vec.means) <- c("alpha", "mean.min.mae", "mean.min.lambda")
+
+#Extract best parameter values
+best.params <- vec.means[which.min(vec.means$mean.min.mae), ]
+best.params
+
+```
+
+```{r plot-alpha}
+#Plot of alpha versus min.mae for each model iteration
+ggplot(vec, aes(x=as.factor(alpha), y=min.mae)) +
+  geom_point() +
+  labs(x="alpha", y="min. mae") +
+  theme_minimal()
+```
+
+Note: the MAE isn't changing by much here.
+
+## Rerunning the model with the filtered data and optimal alpha
+
+```{r}
+# 70% training and 30% test data
+# Determine the number of rows and split indices
+set.seed(44)
+n_rows <- nrow(sealion_perc_filt)
+train_indices <- sample(n_rows, size = (n_rows*0.7), replace = F)
+
+# Split the data
+train_data <- sealion_perc_filt[train_indices, ]
+test_data <- sealion_perc_filt[-train_indices, ]
+
+### trimming first column on the testing stand training dataset
+#train_data <- train_data[,-1]
+#test_data <- test_data[,-1]
+
+# Verify
+print(dim(train_data))
+
+print(dim(test_data))
+
+```
+
+
+```{r run-model-with-filtered-data}
+CVGLM <- cv.glmnet(x = as.matrix(train_data[,-length(train_data)]),
+                   y = as.matrix(train_data[,length(train_data)]),
+                   nfolds = nrow(train_data),
+                   alpha = 0.008, # using the optimal value here based on the above evaluation of alpha
+                   type.measure = "mae",
+                   family = "gaussian",
+                   grouped = FALSE)
+
+min(CVGLM$cvm)
+```
+
+Basically the MAE value predicted in the optimal alpha analysis.
+
+Looping over individuals to get predicted age estimates from ‘CVGLM’ generated with filtered data
+```{r model-with-filtered-data-and-optimal-alpha}
+z <- lapply(1:nrow(train_data), function(x){
+  fit <- glmnet(
+                x = as.matrix(train_data[-x,-length(train_data)]),
+                y = as.matrix(train_data[-x,length(train_data)]),
+                alpha = 0.008,
+                lambda = CVGLM$lambda.min,
+                family="gaussian")
+
+   pred <- predict(fit, as.matrix(train_data[x,-length(train_data)]), type = "response")
+
+  return(data.frame(pred, true = train_data[x,length(train_data)]))
+})
+
+z <- do.call(rbind, z)
+colnames(z) <- c("PredictedAge", "ChronologicalAge")
+z
+
+```
+
+```{r linear-regression-on-testing-data}
+#Linear regression on testing dataset
+regression_FCs <- lm(z$ChronologicalAge ~ z$PredictedAge)
+summary(regression_FCs)
+
+```
+```{r}
+#MAE on testing dataset
+opt_model_mae <- round(mae(z$ChronologicalAge, z$PredictedAge), digits = 2)
+
+opt_model_mae
+```
+
+```{r}
+#Calculate residuals on testing dataset
+z$Residuals <- z$PredictedAge - z$ChronologicalAge
+
+#Calculate relative error on testing dataset
+z$RelativeError <- abs(z$Residuals) / z$ChronologicalAge
+regression_error <- lm(z$RelativeError ~ z$ChronologicalAge)
+summary(regression_error)
+```
+
+```{r plot-optimized-model-output}
+ggplot(pred, aes(x = ChronologicalAge, y = PredictedAge)) +
+  geom_point(color = "red") +  # Color points red
+  geom_smooth(method = "lm", se = TRUE, color = "blue", fill = "lightblue") +  # Confidence envelope with line - seems like the SE could be based on the data?
+  labs(x = "Chronological age", y = "Predicted age") +
+  coord_fixed() +  # Ensures same scale for x and y
+  annotate("text", x = 9, y = 22.5, label = "R^2 = 0.6611", # I can't figure out how to call this directly from the model
+           color = "black", size = 3) + 
+  annotate("text", x = 9, y = 21.5, label = paste0("MAE = ", opt_model_mae), 
+           color = "black", size = 3) +
+  theme_minimal() +
+  scale_x_continuous(limits = c(5, 25)) +
+  scale_y_continuous(limits = c(5, 25)) +
+  geom_abline(slope = 1, color = "black", linetype = "dotted") +
+  theme(
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+  ) +
+  labs(title = "Steller sea lion epigenetic clock:\nCVGLM test data, 8 loci, 29 indiv")
+  
+ggsave("outputs/ssl_modeled_output.png", width = 8, height = 6)
+```
+
