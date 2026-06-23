@@ -45,6 +45,16 @@ loc114_df <- loc114 %>%
 ssl_bismark_output <- loc114_df %>%
   bind_rows(sample_df)
 ```
+
+```{r sequencing-summary}
+ssl_bismark_output %>%
+  group_by(locus) %>%
+  summarise(mean_reads = mean(`Total Reads`)) %>%
+  arrange(mean_reads)
+
+```
+
+
 ```{r sequencing-depth-across-loci}
 ssl_bismark_output %>%
   ggplot(aes(x = sample, y = `Total Reads`)) +
@@ -220,4 +230,18 @@ ssl_bismark_output %>%
 
 ```
 
+
+### output metadata
+
+```{r}
+meta %>%
+  mutate(CollectionDate = paste0(CollectionYear,"-",CollectionMonth,"-",CollectionDay)) %>%
+  filter(ExtractionPlate == "DNA0147") %>%
+  select(AlternateID, CollectionDate, Location1, AgeYRS, Sex) %>%
+  arrange(AgeYRS) %>%
+  write_csv("outputs/DNA0147_samples_for_table.csv")
+  
+
+
+```
 
